@@ -1,0 +1,598 @@
+<!--
+AnimeList - Single-file web app (index.html)
+
+Mô tả nhanh:
+- Web SPA (HTML/CSS/JS) để quản lý "My Anime List" cá nhân.
+- Dữ liệu user lưu localStorage (device riêng). Hỗ trợ export/import JSON và CSV để đồng bộ thủ công giữa thiết bị.
+- Khi add anime bằng tên, app sẽ tìm dữ liệu từ MyAnimeList thông qua API Jikan (unofficial MAL API) để lấy ảnh, synopsis, genres, status, url... Nếu không tìm thấy có thể add thủ công cho anime sắp ra mắt.
+- Tính năng: rate, track ep watched, filter (genre/tag/status/season), random pick, gợi ý anime hot (lấy từ Jikan top anime), gợi ý thông minh dựa trên tag/genres của list.
+- Giao diện: nền tối, overlay, placeholder background One Piece. **Thay file assets/onepiece-bg.jpg trong repo bằng wallpaper One Piece bạn thích**.
+
+Hướng dẫn deploy lên GitHub Pages (bằng GitHub web UI hoặc CLI):
+A) Cách nhanh (web UI):
+1. Tạo repo mới trên GitHub (ví dụ: username/anime-list).
+2. Upload file index.html (và thư mục /assets nếu bạn thêm hình nền riêng) vào branch 'main'.
+3. Vào Settings > Pages (hoặc Pages trong menu) -> Source: chọn branch 'main' và folder '/' -> Save.
+4. Đợi ~1-2 phút, site sẽ chạy ở https://<your-username>.github.io/<repo-name>/ .
+
+B) Cách dùng Git CLI:
+1. mkdir anime-list && cd anime-list
+2. git init
+3. tạo file index.html (dùng nội dung này)
+4. git add index.html
+5. git commit -m "Initial commit"
+6. git branch -M main
+7. git remote add origin git@github.com:<your-username>/<repo-name>.git
+8. git push -u origin main
+9. Vào Settings > Pages như trên để bật GitHub Pages.
+
+Lưu ý về API & CORS:
+- App dùng Jikan API (https://api.jikan.moe/v4). Đây là API không chính thức thay cho MyAnimeList, hoạt động tốt cho client-side. Nếu gặp lỗi CORS hoặc rate-limit, có thể:
+  * Dùng proxy CORS tạm (không khuyến nghị về lâu dài), hoặc
+  * Deploy một small server/proxy (Cloudflare Worker / Netlify Function) để gọi Jikan, hoặc
+  * Chuyển sang MyAnimeList chính thức API (yêu cầu OAuth, cần server-side hỗ trợ).
+
+Export / Import nhanh:
+- Export JSON: xuất toàn bộ list -> tải file -> import trên thiết bị khác.
+- Export CSV: hỗ trợ Excel/Google Sheets.
+- Quick sync: dùng GitHub Gist để lưu file JSON và import url gist raw (tương đối thủ công).
+
+Hướng mở rộng (nếu muốn sau này):
+- Thêm user account + sync (Firebase / Supabase).
+- Lưu review lên server để backup.
+- Thêm tags autocompletion, bulk edit, và đồng bộ giữa devices.
+
+-->
+
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AnimeList - Your Personal MAL-like</title>
+  <style>
+    :root{
+      --bg-overlay: rgba(0,0,0,0.66);
+      --accent: #f39c12; /* orange */
+      --muted: #9aa4b2;
+      --glass: rgba(255,255,255,0.03);
+      --card-bg: rgba(255,255,255,0.02);
+      --success: #27ae60;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial;
+      color:#e6eef8;background-color:#08070a;min-height:100%;
+      /* Replace assets/onepiece-bg.jpg in repo with your One Piece wallpaper */
+      background-image: linear-gradient(180deg, rgba(0,0,0,0.55), rgba(0,0,0,0.7)), url('assets/onepiece-bg.jpg');
+      background-size:cover;background-position:center center;background-attachment:fixed;
+      -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
+    }
+    header{backdrop-filter: blur(6px); background:linear-gradient(180deg, rgba(0,0,0,0.35), rgba(0,0,0,0.2)); padding:12px 18px; position:sticky; top:0; z-index:40; border-bottom:1px solid rgba(255,255,255,0.03)}
+    .wrap{max-width:1100px;margin:18px auto;padding:12px}
+    .nav{display:flex;align-items:center;gap:12px}
+    .brand{font-weight:700;font-size:18px;color:var(--accent)}
+    .nav a{color:#cfe6ff;text-decoration:none;padding:8px 10px;border-radius:8px}
+    .nav a.active{background:var(--glass);}
+    .top-actions{margin-left:auto;display:flex;gap:8px}
+    .btn{background:transparent;border:1px solid rgba(255,255,255,0.06);padding:8px 10px;border-radius:8px;color:#e8f0ff;cursor:pointer}
+    .btn:hover{transform:translateY(-1px)}
+
+    main{max-width:1100px;margin:12px auto;padding:12px}
+
+    .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:12px}
+
+    .card{grid-column: span 4;background:var(--card-bg);padding:12px;border-radius:12px;border:1px solid rgba(255,255,255,0.03)}
+
+    /* list table */
+    .list-table{width:100%;border-collapse:collapse}
+    .list-table th, .list-table td{padding:10px;border-bottom:1px dashed rgba(255,255,255,0.03);vertical-align:middle}
+
+    .anime-card{display:flex;gap:12px;align-items:flex-start}
+    .anime-card img{width:84px;height:120px;object-fit:cover;border-radius:8px}
+    .meta{flex:1}
+    .genres{font-size:12px;color:var(--muted);margin-top:6px}
+
+    .controls{display:flex;gap:8px;align-items:center}
+
+    /* responsive */
+    @media (max-width:800px){
+      .grid{grid-template-columns:repeat(6,1fr)}
+      .card{grid-column:span 6}
+      .anime-card img{width:70px;height:100px}
+    }
+    @media (max-width:420px){
+      .grid{grid-template-columns:repeat(1,1fr)}
+      header .wrap{padding:8px}
+      .nav a{padding:6px 8px}
+    }
+
+    /* overlay panel */
+    .panel{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));padding:12px;border-radius:10px;border:1px solid rgba(255,255,255,0.03)}
+
+    .muted{color:var(--muted)}
+    input,select,textarea{background:transparent;border:1px solid rgba(255,255,255,0.06);padding:8px;border-radius:8px;color:#e8f0ff}
+    .small{font-size:13px}
+
+    footer{max-width:1100px;margin:18px auto;color:var(--muted);padding:12px;text-align:center}
+
+    /* pills */
+    .pill{display:inline-block;padding:6px 10px;border-radius:999px;border:1px solid rgba(255,255,255,0.03);background:rgba(255,255,255,0.015);font-size:13px}
+
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap nav">
+      <div class="brand">AnimeList</div>
+      <nav>
+        <a href="#home" data-route="home" class="active">🏠 Trang chủ</a>
+        <a href="#mylist" data-route="mylist">📚 My List</a>
+        <a href="#library" data-route="library">🗂 Thư viện / Gợi ý</a>
+        <a href="#reviews" data-route="reviews">✍️ Đánh giá</a>
+      </nav>
+
+      <div class="top-actions">
+        <input id="globalSearch" placeholder="Tìm anime... (gõ tên & Enter)" style="min-width:220px">
+        <button class="btn" id="randomBtn" title="Random from my list">🎲 Random</button>
+        <button class="btn" id="exportBtn">⬇ Export</button>
+        <button class="btn" id="importBtn">⬆ Import</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div id="app">
+      <!-- pages will be injected here -->
+    </div>
+  </main>
+
+  <footer>
+    AnimeList — Local-first. Dùng Jikan API để lấy dữ liệu MyAnimeList. Thay ảnh nền trong /assets để đặt One Piece wallpaper của bạn.
+  </footer>
+
+  <input type="file" id="fileInput" style="display:none" />
+
+  <script>
+    // ---------------------- CONFIG ----------------------
+    const STORAGE_KEY = 'animeList_v1';
+    const API_BASE = 'https://api.jikan.moe/v4'; // Jikan unofficial MAL API
+    const MAX_SUGGEST = 12;
+
+    // ---------------------- Helpers ----------------------
+    function uid(prefix='a'){return prefix+Math.random().toString(36).slice(2,9)}
+    function save(data){localStorage.setItem(STORAGE_KEY, JSON.stringify(data))}
+    function load(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')}catch(e){return []}}
+
+    function download(filename, text) {
+      const el = document.createElement('a');
+      el.setAttribute('href', 'data:text/json;charset=utf-8,' + encodeURIComponent(text));
+      el.setAttribute('download', filename);
+      document.body.appendChild(el);el.click();el.remove();
+    }
+
+    // ---------------------- App state ----------------------
+    let state = {
+      list: load(),
+      route: 'home',
+      searchResults: [],
+      topAnimeCache: null
+    }
+
+    // ---------------------- Routing & Render ----------------------
+    function setRoute(r){state.route=r;history.replaceState(null,'', '#'+r); render()}
+
+    function render(){
+      // update nav active
+      document.querySelectorAll('header a').forEach(a=>a.classList.toggle('active', a.getAttribute('href')===('#'+state.route)));
+      const app = document.getElementById('app');
+      if(state.route==='mylist') renderMyList(app);
+      else if(state.route==='library') renderLibrary(app);
+      else if(state.route==='reviews') renderReviews(app);
+      else renderHome(app);
+    }
+
+    // ---------------------- UI Pages ----------------------
+    function renderHome(root){
+      root.innerHTML = `
+        <div class="grid">
+          <div class="card panel" style="grid-column:span 8">
+            <h2>Gợi ý thông minh</h2>
+            <div id="smartSuggest" class="panel" style="margin-top:8px"></div>
+          </div>
+          <div class="card panel" style="grid-column:span 4">
+            <h3>Tổng quan list</h3>
+            <p class="muted">Bạn có <strong id="count">${state.list.length}</strong> bộ trong list.</p>
+            <div class="controls" style="margin-top:8px">
+              <button class="btn" id="pickRandom">🎲 Chọn ngẫu nhiên</button>
+              <button class="btn" id="quickExport">⬇ Xuất JSON</button>
+              <button class="btn" id="quickCSV">CSV</button>
+            </div>
+          </div>
+
+          <div class="card panel" style="grid-column:span 12;margin-top:6px">
+            <h3>Hot anime (không có trong list)</h3>
+            <div id="hotList" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:12px"></div>
+          </div>
+        </div>
+      `;
+
+      document.getElementById('pickRandom').onclick = ()=>pickRandomFromList(true);
+      document.getElementById('quickExport').onclick = ()=>download('anime-list.json', JSON.stringify(state.list, null, 2));
+      document.getElementById('quickCSV').onclick = ()=>download('anime-list.csv', toCSV(state.list));
+
+      renderSmartSuggest();
+      renderHot();
+    }
+
+    async function renderHot(){
+      const hotEl = document.getElementById('hotList');
+      hotEl.innerHTML = '<p class="muted">Đang lấy dữ liệu...</p>';
+      try{
+        const res = await fetch(API_BASE + '/top/anime?limit=24');
+        const j = await res.json();
+        const arr = j.data || [];
+        // filter out ones already in list
+        const myMalIds = new Set(state.list.map(a=>String(a.mal_id)));
+        const candidates = arr.filter(a=>!myMalIds.has(String(a.mal_id))).slice(0, MAX_SUGGEST);
+        hotEl.innerHTML = candidates.map(a=>`
+          <div class="panel" style="display:flex;gap:10px;align-items:center">
+            <img src="${a.images.jpg.image_url}" style="width:64px;height:90px;object-fit:cover;border-radius:6px">
+            <div style="flex:1">
+              <div style="display:flex;justify-content:space-between;align-items:center"><strong>${escapeHtml(a.title)}</strong><span class="pill small">Score ${a.score ?? 'N/A'}</span></div>
+              <div class="muted small">${a.type || ''} • ${a.members ?? ''} members</div>
+              <div style="margin-top:6px"><button class="btn" data-add="${a.mal_id}">+ Thêm</button></div>
+            </div>
+          </div>
+        `).join('');
+        hotEl.querySelectorAll('button[data-add]').forEach(btn=>btn.addEventListener('click', async (e)=>{
+          const id = btn.getAttribute('data-add');
+          await addAnimeByMalId(id);
+          render();
+        }));
+      }catch(err){
+        hotEl.innerHTML = '<p class="muted">Không thể lấy hot list — có thể do CORS hoặc API limit.</p>';
+        console.error(err);
+      }
+    }
+
+    function renderSmartSuggest(){
+      const container = document.getElementById('smartSuggest');
+      container.innerHTML = '<p class="muted">Đang phân tích thói quen...</p>';
+      if(state.list.length===0){container.innerHTML = '<p class="muted">Add vài bộ trước đã, t sẽ gợi ý thông minh dựa trên genres và tags của list.</p>';return}
+      // compute top genres
+      const genreCounts = {};
+      state.list.forEach(a=>{(a.genres||[]).forEach(g=>genreCounts[g.name || g] = (genreCounts[g.name || g]||0)+1)});
+      const topGenres = Object.entries(genreCounts).sort((a,b)=>b[1]-a[1]).slice(0,3).map(x=>x[0]);
+      // show top genres
+      container.innerHTML = `<div class="muted small">Top genres: ${topGenres.join(', ')}</div><div id="smartResults" style="margin-top:8px"></div>`;
+      fetchSmartSuggestions(topGenres).then(results=>{
+        const el = document.getElementById('smartResults');
+        if(!results || results.length===0) return el.innerHTML='<p class="muted">Không tìm được đề xuất phù hợp.</p>';
+        el.innerHTML = results.map(a=>`
+          <div class="panel" style="display:flex;gap:10px;align-items:center">
+            <img src="${a.images.jpg.image_url}" style="width:64px;height:90px;object-fit:cover;border-radius:6px">
+            <div style="flex:1">
+              <div style="display:flex;justify-content:space-between;align-items:center"><strong>${escapeHtml(a.title)}</strong><span class="pill small">Score ${a.score ?? 'N/A'}</span></div>
+              <div class="muted small">${(a.genres||[]).slice(0,3).map(g=>g.name).join(', ')}</div>
+              <div style="margin-top:6px"><button class="btn" data-add="${a.mal_id}">+ Thêm</button></div>
+            </div>
+          </div>
+        `).join('');
+        el.querySelectorAll('button[data-add]').forEach(btn=>btn.addEventListener('click', async ()=>{await addAnimeByMalId(btn.getAttribute('data-add')); render();}));
+      }).catch(e=>{console.error(e);document.getElementById('smartResults').innerHTML='<p class="muted">Lỗi khi lấy gợi ý.</p>'});
+    }
+
+    async function fetchSmartSuggestions(topGenres){
+      try{
+        // simple approach: fetch top/anime and filter by genre overlap
+        const res = await fetch(API_BASE + '/top/anime?limit=100');
+        const j = await res.json();
+        const arr = j.data || [];
+        const myIds = new Set(state.list.map(a=>String(a.mal_id)));
+        const scored = arr.map(a=>{
+          const gs = (a.genres||[]).map(g=>g.name);
+          const overlap = gs.filter(g=>topGenres.includes(g)).length;
+          return {a,score:overlap};
+        }).filter(x=>x.score>0 && !myIds.has(String(x.a.mal_id))).sort((a,b)=>b.score - a.score || (b.a.score||0)-(a.a.score||0));
+        return scored.slice(0, MAX_SUGGEST).map(x=>x.a);
+      }catch(e){console.error(e);return []}
+    }
+
+    function renderMyList(root){
+      root.innerHTML = `
+        <div class="panel">
+          <h2>My List</h2>
+          <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+            <div><label class="small muted">Filter</label><br><select id="filterGenre"><option value="">All genres</option></select></div>
+            <div><label class="small muted">Status</label><br><select id="filterStatus"><option value="">All</option><option value="watching">Watching</option><option value="completed">Completed</option><option value="plan">Plan to watch</option><option value="dropped">Dropped</option></select></div>
+            <div style="margin-left:auto"><button class="btn" id="addManualBtn">+ Add (search)</button></div>
+          </div>
+          <div style="margin-top:12px" id="listWrap"></div>
+        </div>
+      `;
+
+      // populate genres
+      const genreSet = new Set(); state.list.forEach(a=>(a.genres||[]).forEach(g=>genreSet.add(g.name||g)));
+      const gsel = document.getElementById('filterGenre'); genreSet.forEach(g=>{const o=document.createElement('option');o.value=g;o.textContent=g;gsel.appendChild(o)});
+
+      document.getElementById('addManualBtn').onclick = ()=>{document.getElementById('globalSearch').focus()};
+
+      document.getElementById('filterGenre').onchange = renderListTable;
+      document.getElementById('filterStatus').onchange = renderListTable;
+
+      renderListTable();
+
+      function renderListTable(){
+        const genre = document.getElementById('filterGenre').value;
+        const status = document.getElementById('filterStatus').value;
+        let items = state.list.slice();
+        if(genre) items = items.filter(a=>(a.genres||[]).map(g=>g.name||g).includes(genre));
+        if(status){
+          if(status==='plan') items = items.filter(a=>a.status==='plan');
+          else items = items.filter(a=>a.status===status);
+        }
+        const wrap = document.getElementById('listWrap');
+        if(items.length===0) {wrap.innerHTML = '<p class="muted">Không có bộ nào phù hợp.</p>'; return}
+
+        wrap.innerHTML = `
+          <table class="list-table" role="table">
+            <thead><tr><th>Anime</th><th>Ep watched</th><th>EP total</th><th>Rating</th><th>Status</th><th></th></tr></thead>
+            <tbody>${items.map(a=>`
+              <tr data-id="${a.id}">
+                <td style="width:40%"><div class="anime-card"><img src="${a.image_url || ''}" alt="${escapeHtml(a.title)}"><div class="meta"><strong>${escapeHtml(a.title)}</strong><div class="genres">${(a.genres||[]).slice(0,3).map(g=>g.name||g).join(', ')} • ${a.type||''}</div></div></div></td>
+                <td><input type="number" min="0" value="${a.watched||0}" data-field="watched" style="width:80px"></td>
+                <td>${a.episodes || 'N/A'}</td>
+                <td><input type="number" min="0" max="10" step="0.5" value="${a.rating||''}" data-field="rating" style="width:80px"></td>
+                <td><select data-field="status"><option value="watching">Watching</option><option value="completed">Completed</option><option value="plan">Plan to watch</option><option value="dropped">Dropped</option><option value="onhold">On-hold</option><option value="upcoming">Upcoming</option></select></td>
+                <td><button class="btn" data-action="open">Open</button> <button class="btn" data-action="remove">Remove</button></td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        `;
+
+        // set select values and add listeners
+        wrap.querySelectorAll('tr[data-id]').forEach(tr=>{
+          const id = tr.getAttribute('data-id'); const item = state.list.find(x=>x.id===id);
+          tr.querySelectorAll('[data-field]').forEach(inp=>{
+            if(inp.tagName==='SELECT') inp.value = item[inp.getAttribute('data-field')]||'watching';
+            inp.addEventListener('change', ()=>{
+              const f = inp.getAttribute('data-field');
+              const val = (inp.type==='number') ? (inp.valueAsNumber || 0) : inp.value;
+              item[f] = val; save(state.list); render();
+            });
+          });
+          tr.querySelector('button[data-action="remove"]').addEventListener('click', ()=>{ if(confirm('Xoá khỏi list?')){ state.list = state.list.filter(x=>x.id!==id); save(state.list); render(); }});
+          tr.querySelector('button[data-action="open"]').addEventListener('click', ()=>openDetails(item));
+        });
+      }
+
+    }
+
+    function renderLibrary(root){
+      root.innerHTML = `
+        <div class="panel">
+          <h2>Thư viện / Tìm & Thêm</h2>
+          <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+            <input id="libSearch" placeholder="Tìm anime (gõ tên và enter)"> <button class="btn" id="searchBtn">Tìm</button>
+            <button class="btn" id="addCustom">+ Add custom / upcoming</button>
+          </div>
+          <div id="searchResults" style="margin-top:12px"></div>
+        </div>
+      `;
+      document.getElementById('libSearch').addEventListener('keydown', async (e)=>{ if(e.key==='Enter') await doSearch(); });
+      document.getElementById('searchBtn').addEventListener('click', doSearch);
+      document.getElementById('addCustom').addEventListener('click', ()=>openManualAdd());
+
+      async function doSearch(){
+        const q = document.getElementById('libSearch').value.trim(); if(!q) return alert('Gõ tên anime đã.');
+        const el = document.getElementById('searchResults'); el.innerHTML = '<p class="muted">Đang tìm...</p>';
+        try{
+          const res = await fetch(API_BASE + '/anime?q=' + encodeURIComponent(q) + '&limit=12');
+          const j = await res.json();
+          const arr = j.data || [];
+          if(arr.length===0) el.innerHTML = '<p class="muted">Không tìm thấy kết quả.</p>';
+          else el.innerHTML = arr.map(a=>`
+            <div class="panel" style="display:flex;gap:12px;align-items:center">
+              <img src="${a.images.jpg.image_url}" style="width:72px;height:96px;object-fit:cover;border-radius:6px">
+              <div style="flex:1">
+                <strong>${escapeHtml(a.title)}</strong>
+                <div class="muted small">${(a.genres||[]).slice(0,3).map(g=>g.name).join(', ')} • ${a.type || ''}</div>
+                <div style="margin-top:6px"><button class="btn" data-add="${a.mal_id}">+ Thêm</button></div>
+              </div>
+            </div>
+          `).join('');
+          el.querySelectorAll('button[data-add]').forEach(btn=>btn.addEventListener('click', async ()=>{await addAnimeByMalId(btn.getAttribute('data-add')); render();}));
+        }catch(e){el.innerHTML='<p class="muted">Lỗi tìm kiếm. Có thể do API hoặc CORS.</p>';console.error(e)}
+      }
+    }
+
+    function renderReviews(root){
+      root.innerHTML = `
+        <div class="panel">
+          <h2>Đánh giá của bạn</h2>
+          <p class="muted">Viết/đọc quick reviews cho mỗi anime trong list.</p>
+          <div id="reviewsWrap" style="margin-top:12px"></div>
+        </div>
+      `;
+      const wrap = document.getElementById('reviewsWrap');
+      if(state.list.length===0){wrap.innerHTML='<p class="muted">Bạn chưa thêm anime nào.</p>';return}
+      wrap.innerHTML = state.list.map(a=>`
+        <div class="panel" style="margin-bottom:8px">
+          <div style="display:flex;gap:12px"><img src="${a.image_url||''}" style="width:72px;height:96px;object-fit:cover;border-radius:6px"><div style="flex:1"><strong>${escapeHtml(a.title)}</strong><div class="muted small">${(a.genres||[]).slice(0,3).map(g=>g.name).join(', ')}</div></div></div>
+          <div style="margin-top:8px"><textarea data-id="${a.id}" rows="4" style="width:100%">${escapeHtml(a.review||'')}</textarea></div>
+          <div style="margin-top:6px"><button class="btn" data-save="${a.id}">Save</button> <button class="btn" data-open="${a.id}">Open</button></div>
+        </div>
+      `).join('');
+
+      wrap.querySelectorAll('button[data-save]').forEach(b=>b.addEventListener('click', ()=>{
+        const id = b.getAttribute('data-save'); const ta = document.querySelector(`textarea[data-id='${id}']`);
+        const item = state.list.find(x=>x.id===id); item.review = ta.value; save(state.list); alert('Saved');
+      }));
+      wrap.querySelectorAll('button[data-open]').forEach(b=>b.addEventListener('click', ()=>{const id=b.getAttribute('data-open');openDetails(state.list.find(x=>x.id===id));}));
+    }
+
+    // ---------------------- Details & Add ----------------------
+    function openDetails(item){
+      const modalHtml = `
+        <div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:999">
+          <div style="background:var(--bg-overlay);backdrop-filter:blur(8px);padding:18px;border-radius:12px;max-width:900px;width:94%;border:1px solid rgba(255,255,255,0.04)">
+            <div style="display:flex;gap:12px">
+              <img src="${item.image_url||''}" style="width:140px;height:200px;object-fit:cover;border-radius:6px">
+              <div style="flex:1">
+                <h3 style="margin:0">${escapeHtml(item.title)}</h3>
+                <div class="muted small">${(item.genres||[]).map(g=>g.name||g).join(', ')} • ${item.type||''} • ${item.episodes||'N/A'} ep</div>
+                <p class="muted small" style="margin-top:8px">${escapeHtml(item.synopsis||'Không có mô tả')}</p>
+                <div style="margin-top:12px;display:flex;gap:8px"><a href="${item.url||'#'}" target="_blank" class="btn">MAL page</a><button class="btn" id="closeModal">Close</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+      const wrap = document.createElement('div'); wrap.innerHTML = modalHtml; document.body.appendChild(wrap);
+      document.getElementById('closeModal').addEventListener('click', ()=>{wrap.remove();});
+    }
+
+    async function addAnimeByMalId(mal_id){
+      try{
+        const res = await fetch(API_BASE + '/anime/' + mal_id + '/full');
+        const j = await res.json(); const a = j.data;
+        if(!a) return alert('Không lấy được dữ liệu');
+        const obj = normalizeJikanAnime(a);
+        // prevent duplicates
+        if(state.list.some(x=>String(x.mal_id)===String(obj.mal_id))) return alert('Đã có trong list');
+        state.list.push(obj); save(state.list); alert('Added: '+obj.title);
+      }catch(e){console.error(e);alert('Lỗi khi lấy dữ liệu từ Jikan. Có thể do CORS hoặc limit.')}
+    }
+
+    function normalizeJikanAnime(a){
+      return {
+        id: uid('mal_')+ (a.mal_id || a.mal_id),
+        mal_id: a.mal_id || a.mal_id,
+        title: a.title,
+        image_url: a.images?.jpg?.image_url || (a.image_url||''),
+        url: a.url || `https://myanimelist.net/anime/${a.mal_id}`,
+        synopsis: a.synopsis || a.short_synopsis || '',
+        genres: (a.genres || a.genres) || [],
+        type: a.type || a.type,
+        episodes: a.episodes || a.episodes || null,
+        watched: 0,
+        rating: null,
+        status: 'plan',
+        season: (a.season && a.year) ? `${capitalize(a.season)} ${a.year}` : (a.season || ''),
+        tags: [],
+        review: '',
+        added_at: Date.now()
+      }
+    }
+
+    function openManualAdd(){
+      const html = `
+        <div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:999">
+          <div style="background:var(--bg-overlay);backdrop-filter:blur(8px);padding:18px;border-radius:12px;max-width:700px;width:94%;border:1px solid rgba(255,255,255,0.04)">
+            <h3>Add custom / upcoming anime</h3>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+              <input id="m_title" placeholder="Title">
+              <input id="m_image" placeholder="Image URL">
+              <input id="m_type" placeholder="Type (TV, Movie, OVA...)">
+              <input id="m_eps" placeholder="Episodes (or leave blank)">
+            </div>
+            <div style="margin-top:8px"><input id="m_genres" placeholder="Genres (comma separated)"></div>
+            <div style="margin-top:8px;display:flex;gap:8px"><button class="btn" id="saveManual">Save</button><button class="btn" id="cancelManual">Cancel</button></div>
+          </div>
+        </div>
+      `;
+      const wrap = document.createElement('div'); wrap.innerHTML = html; document.body.appendChild(wrap);
+      wrap.querySelector('#cancelManual').onclick = ()=>wrap.remove();
+      wrap.querySelector('#saveManual').onclick = ()=>{
+        const title = wrap.querySelector('#m_title').value.trim(); if(!title) return alert('Nhập title');
+        const obj = {
+          id: uid('custom_'), mal_id: null, title, image_url: wrap.querySelector('#m_image').value.trim(), url: '', synopsis: '', genres: wrap.querySelector('#m_genres').value.split(',').map(s=>s.trim()).filter(Boolean).map(g=>({name:g})), type: wrap.querySelector('#m_type').value.trim(), episodes: Number(wrap.querySelector('#m_eps').value) || null, watched:0, rating:null, status:'upcoming', season:'', tags:[], review:'', added_at:Date.now()
+        };
+        state.list.push(obj); save(state.list); wrap.remove(); render();
+      }
+    }
+
+    // ---------------------- Utilities ----------------------
+    function escapeHtml(s){ if(!s) return ''; return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'); }
+    function capitalize(s){ if(!s) return s; return s.charAt(0).toUpperCase()+s.slice(1)}
+
+    // ---------------------- Import / Export ----------------------
+    document.getElementById('exportBtn').addEventListener('click', ()=>download('anime-list.json', JSON.stringify(state.list, null, 2)));
+    document.getElementById('importBtn').addEventListener('click', ()=>document.getElementById('fileInput').click());
+    document.getElementById('fileInput').addEventListener('change', async (e)=>{
+      const f = e.target.files[0]; if(!f) return; const txt = await f.text();
+      try{ const parsed = JSON.parse(txt); if(Array.isArray(parsed)){ state.list = mergeImport(parsed); save(state.list); alert('Import JSON thành công'); render(); } else { alert('Không đúng định dạng JSON (cần array).') } }
+      catch(err){ // try CSV
+        try{ const arr = parseCSV(txt); state.list = mergeImport(arr); save(state.list); alert('Import CSV thành công'); render(); }catch(e){alert('Không parse được file.'); console.error(e)}
+      }
+      e.target.value = '';
+    });
+
+    function mergeImport(imported){
+      // imported may be objects with title, mal_id... We'll attempt to merge without duplicates by mal_id or title.
+      const existing = state.list.slice();
+      imported.forEach(it=>{
+        const found = it.mal_id ? existing.find(x=>String(x.mal_id)===String(it.mal_id)) : existing.find(x=>x.title===it.title);
+        if(!found){ // normalize minimal fields
+          existing.push({id:uid('imp_'), mal_id: it.mal_id || null, title: it.title || it.name || 'Unknown', image_url: it.image_url || '', url: it.url||'', synopsis: it.synopsis||'', genres: (it.genres && Array.isArray(it.genres))?it.genres:((it.genre||it.genres||'').split(',').map(s=>({name:s.trim()}))), type: it.type||'', episodes: it.episodes||null, watched: it.watched||0, rating: it.rating||null, status: it.status||'plan', season: it.season||'', tags: it.tags||[], review: it.review||'', added_at: Date.now()});
+        }
+      });
+      return existing;
+    }
+
+    function toCSV(arr){
+      const header = ['title,mal_id,image_url,episodes,watched,rating,status,genres,tags,season,review'];
+      const rows = arr.map(a=>`"${(a.title||'').replace(/"/g,'""')}","${a.mal_id||''}","${a.image_url||''}","${a.episodes||''}","${a.watched||''}","${a.rating||''}","${a.status||''}","${(a.genres||[]).map(g=>g.name||g).join('|')}","${(a.tags||[]).join('|')}","${a.season||''}","${(a.review||'').replace(/"/g,'""')}"`);
+      return header.concat(rows).join('\n');
+    }
+    function parseCSV(txt){
+      // Basic CSV parser for our exported format
+      const lines = txt.split('\n').map(l=>l.trim()).filter(Boolean);
+      const data = [];
+      for(let i=1;i<lines.length;i++){
+        const cols = splitCSVLine(lines[i]);
+        data.push({title:cols[0],mal_id:cols[1],image_url:cols[2],episodes:cols[3],watched:cols[4],rating:cols[5],status:cols[6],genres: (cols[7]||'').split('|').filter(Boolean).map(g=>({name:g})),tags:(cols[8]||'').split('|').filter(Boolean),season:cols[9],review:cols[10]});
+      }
+      return data;
+    }
+    function splitCSVLine(line){
+      const out=[]; let cur=''; let inQuotes=false;
+      for(let i=0;i<line.length;i++){const ch=line[i]; if(ch==='"'){ if(inQuotes && line[i+1]==='"'){cur+='"'; i++;} else inQuotes=!inQuotes; } else if(ch===',' && !inQuotes){out.push(cur);cur='';} else cur+=ch; } out.push(cur); return out.map(s=>s.replace(/^"|"$/g, ''));
+    }
+
+    // ---------------------- Search bar hook ----------------------
+    document.getElementById('globalSearch').addEventListener('keydown', async (e)=>{ if(e.key==='Enter'){ const q = e.target.value.trim(); if(!q) return; // open library search
+        location.hash = '#library'; setTimeout(()=>{ document.getElementById('libSearch') && (document.getElementById('libSearch').value = q); document.getElementById('libSearch') && document.getElementById('libSearch').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter'})); }, 120);
+    }});
+
+    // ---------------------- Random pick ----------------------
+    document.getElementById('randomBtn').addEventListener('click', ()=>pickRandomFromList(true));
+    function pickRandomFromList(showAlert=false){ if(state.list.length===0) return alert('No anime in list'); const i = Math.floor(Math.random()*state.list.length); const a = state.list[i]; if(showAlert) alert(`Random: ${a.title}`); openDetails(a); }
+
+    // ---------------------- Smart fetch & misc ----------------------
+
+    async function fetchTop(limit=24){
+      if(state.topAnimeCache) return state.topAnimeCache;
+      try{ const res = await fetch(API_BASE + '/top/anime?limit=' + limit); const j = await res.json(); state.topAnimeCache = j.data || []; return state.topAnimeCache; } catch(e){ console.error(e); return []; }
+    }
+
+    // ---------------------- Boot ----------------------
+    // Hash routing
+    function handleHash(){ const h = location.hash.replace('#',''); state.route = h || 'home'; render(); }
+    window.addEventListener('hashchange', handleHash);
+    document.querySelectorAll('header a').forEach(a=>a.addEventListener('click', (e)=>{document.querySelectorAll('header a').forEach(x=>x.classList.remove('active')); a.classList.add('active');}));
+
+    handleHash();
+
+    // ---------------------- Minimal utilities ----------------------
+    // used by add
+    async function fetchAnimeByTitle(q){ const res = await fetch(API_BASE + '/anime?q=' + encodeURIComponent(q) + '&limit=8'); const j = await res.json(); return j.data || []; }
+
+    // ---------------------- Extra: add by title quick function ----------------------
+    // (not used directly but available for future)
+
+  </script>
+</body>
+</html>
